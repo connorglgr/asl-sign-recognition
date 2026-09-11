@@ -1,0 +1,11 @@
+kaggle==1.7.4.5
+keras==2.15.0
+mediapipe==0.10.14
+numpy==1.26.4
+opencv-contrib-python==4.10.0.84
+opencv-python==4.10.0.84
+pandas==2.3.3
+protobuf==4.25.9
+tensorflow==2.15.0
+tensorflow-macos==2.15.0
+pyarrow==21.0.0

@@ -1,0 +1,8 @@
+venv/
+data/train_landmark_files/
+data/download.log
+data/train.csv.zip
+reference/
+__pycache__/
+*.pyc
+.DS_Store
