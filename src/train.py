@@ -50,6 +50,17 @@ def main():
     model = build_model(X_train.shape[1], X_train.shape[2], len(words))
     model.summary()
 
+    # Self-recorded classes get augmented copies (see prepare_data.py), which
+    # otherwise leaves them heavily overrepresented vs. untouched Kaggle
+    # classes (e.g. ~130 "yes" rows vs. ~38 "dad" rows) - the model ends up
+    # biased toward whichever classes it's simply seen more of. Inverse-
+    # frequency class weights counteract that at training time.
+    class_counts = np.bincount(y_train, minlength=len(words))
+    class_weight = {
+        i: len(y_train) / (len(words) * count) for i, count in enumerate(class_counts)
+    }
+    print(f"Class weights: {dict(zip(words, (round(class_weight[i], 2) for i in range(len(words)))))}")
+
     callbacks = [
         keras.callbacks.EarlyStopping(
             monitor="val_accuracy", mode="max", patience=15, restore_best_weights=True
@@ -66,6 +77,7 @@ def main():
         epochs=100,
         batch_size=32,
         callbacks=callbacks,
+        class_weight=class_weight,
         verbose=2,
     )
 

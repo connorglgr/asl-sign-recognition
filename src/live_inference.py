@@ -8,7 +8,6 @@ trained model, and prints the predicted sign to the terminal.
 
 import json
 import os
-from collections import deque
 
 import cv2
 import mediapipe as mp
@@ -16,11 +15,14 @@ import numpy as np
 import tensorflow as tf
 
 from landmarks import FEATURE_DIM, MAX_SEQ_LEN, extract_frame_from_mediapipe
+from prepare_data import pad_or_sample
 
 BASE_DIR = os.path.join(os.path.dirname(__file__), "..")
 MODEL_PATH = os.path.join(BASE_DIR, "model", "asl_model.keras")
 STATS_PATH = os.path.join(BASE_DIR, "data", "processed", "preprocess_stats.json")
 CONFIDENCE_THRESHOLD = 0.4
+MIN_SEQ_LEN = 24  # start attempting predictions once we have at least this many frames
+PREDICT_STRIDE = 4  # after MIN_SEQ_LEN, retry every N new frames until confident or full
 
 
 def load_stats():
@@ -55,8 +57,9 @@ def main():
     if not cap.isOpened():
         raise RuntimeError("Could not open webcam.")
 
-    buffer = deque(maxlen=MAX_SEQ_LEN)
+    buffer = []
     last_prediction_text = "..."
+    frames_since_predict = 0
 
     print("\nSign one of your chosen words at the camera. Press 'q' to quit.\n")
 
@@ -81,12 +84,23 @@ def main():
             mp_drawing.draw_landmarks(frame, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
             mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_holistic.POSE_CONNECTIONS)
 
-            fill = len(buffer)
-            cv2.rectangle(frame, (0, 0), (int(frame.shape[1] * fill / MAX_SEQ_LEN), 8), (0, 200, 0), -1)
+            cv2.putText(
+                frame, "Sign-to-Text  |  by Connor G", (20, 28),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2,
+            )
 
-            if fill == MAX_SEQ_LEN:
+            fill = len(buffer)
+            cv2.rectangle(frame, (0, 0), (int(frame.shape[1] * min(fill, MAX_SEQ_LEN) / MAX_SEQ_LEN), 8), (0, 200, 0), -1)
+
+            frames_since_predict += 1
+            ready_to_try = fill >= MIN_SEQ_LEN and frames_since_predict >= PREDICT_STRIDE
+            buffer_full = fill >= MAX_SEQ_LEN
+
+            if ready_to_try or buffer_full:
+                frames_since_predict = 0
                 seq = np.stack(buffer, axis=0)
                 seq = normalize_sequence(seq, feat_mean, feat_min, feat_max)
+                seq = pad_or_sample(seq, MAX_SEQ_LEN)
                 seq = seq[np.newaxis, ...]  # (1, MAX_SEQ_LEN, FEATURE_DIM)
 
                 probs = model.predict(seq, verbose=0)[0]
@@ -97,11 +111,12 @@ def main():
                     word = words[pred_idx]
                     last_prediction_text = f"{word} ({confidence:.0%})"
                     print(f">>> {word}  (confidence {confidence:.0%})")
-                else:
+                    buffer = []
+                elif buffer_full:
                     last_prediction_text = f"? ({confidence:.0%})"
                     print(f">>> not confident enough (best guess {words[pred_idx]} at {confidence:.0%})")
-
-                buffer.clear()
+                    buffer = []
+                # else: not confident yet and buffer isn't full - keep accumulating and retry
 
             cv2.putText(
                 frame, last_prediction_text, (20, frame.shape[0] - 30),
