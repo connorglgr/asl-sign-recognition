@@ -8,6 +8,7 @@ trained model, and prints the predicted sign to the terminal.
 
 import json
 import os
+from collections import deque
 
 import cv2
 import mediapipe as mp
@@ -16,6 +17,7 @@ import tensorflow as tf
 
 from landmarks import FEATURE_DIM, MAX_SEQ_LEN, extract_frame_from_mediapipe
 from prepare_data import pad_or_sample
+from translate import gloss_to_english
 
 BASE_DIR = os.path.join(os.path.dirname(__file__), "..")
 MODEL_PATH = os.path.join(BASE_DIR, "model", "asl_model.keras")
@@ -23,6 +25,7 @@ STATS_PATH = os.path.join(BASE_DIR, "data", "processed", "preprocess_stats.json"
 CONFIDENCE_THRESHOLD = 0.4
 MIN_SEQ_LEN = 24  # start attempting predictions once we have at least this many frames
 PREDICT_STRIDE = 4  # after MIN_SEQ_LEN, retry every N new frames until confident or full
+CONFIRM_COUNT = 2  # require this many consecutive matching predictions before committing
 
 
 def load_stats():
@@ -60,8 +63,11 @@ def main():
     buffer = []
     last_prediction_text = "..."
     frames_since_predict = 0
+    recognized_feed = deque(maxlen=8)
+    pending_word = None
+    pending_count = 0
 
-    print("\nSign one of your chosen words at the camera. Press 'q' to quit.\n")
+    print("\nSign one of your chosen words at the camera. Press 'q' to quit, 'c' to clear the feed.\n")
 
     with mp_holistic.Holistic(
         min_detection_confidence=0.5, min_tracking_confidence=0.5
@@ -109,23 +115,55 @@ def main():
 
                 if confidence >= CONFIDENCE_THRESHOLD:
                     word = words[pred_idx]
-                    last_prediction_text = f"{word} ({confidence:.0%})"
-                    print(f">>> {word}  (confidence {confidence:.0%})")
+                    if word == pending_word:
+                        pending_count += 1
+                    else:
+                        pending_word = word
+                        pending_count = 1
+
+                    if pending_count >= CONFIRM_COUNT:
+                        last_prediction_text = f"{word} ({confidence:.0%})"
+                        print(f">>> {word}  (confidence {confidence:.0%})")
+                        if not recognized_feed or recognized_feed[-1] != word:
+                            recognized_feed.append(word)
+                        pending_word = None
+                        pending_count = 0
+                    else:
+                        last_prediction_text = f"{word}...? ({confidence:.0%})"
+                        print(f">>> tentative {word}  (confidence {confidence:.0%}), confirming...")
                     buffer = []
                 elif buffer_full:
                     last_prediction_text = f"? ({confidence:.0%})"
                     print(f">>> not confident enough (best guess {words[pred_idx]} at {confidence:.0%})")
+                    pending_word = None
+                    pending_count = 0
                     buffer = []
                 # else: not confident yet and buffer isn't full - keep accumulating and retry
 
             cv2.putText(
-                frame, last_prediction_text, (20, frame.shape[0] - 30),
+                frame, last_prediction_text, (20, frame.shape[0] - 95),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3,
             )
+
+            feed_text = "Feed: " + " ".join(recognized_feed) if recognized_feed else "Feed: (empty - 'c' to clear)"
+            cv2.putText(
+                frame, feed_text, (20, frame.shape[0] - 55),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2,
+            )
+
+            translated_text = "English: " + gloss_to_english(recognized_feed)
+            cv2.putText(
+                frame, translated_text, (20, frame.shape[0] - 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 180, 0), 2,
+            )
+
             cv2.imshow("ASL Recognition Demo", frame)
 
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
                 break
+            if key == ord("c"):
+                recognized_feed.clear()
 
     cap.release()
     cv2.destroyAllWindows()

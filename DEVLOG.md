@@ -135,15 +135,106 @@ training time). Critically, **the buffer is cleared after every prediction
 attempt, confident or not** — so a finished sign's frames never leak into the
 next one. This keeps the faster cadence without the cross-contamination.
 
+## It also didn't work for my mom
+
+The whole point of this project is for my mom, so I had her try it. The classes
+I'd just fixed by re-recording myself (later/no/yes) worked much worse for her
+than for me, even when she signed them correctly. A small model trained on one
+person's exact body proportions, camera distance, and signing style overfits to
+that person — it doesn't automatically generalize to someone else. The
+Kaggle-sourced classes (which had many different people in the training data)
+transferred better, which in hindsight was a clue.
+
+Fixed two ways at once:
+
+1. **Data augmentation** — for every self-recorded clip, generate a couple of
+   extra copies with a small random rotate/scale/shift jitter (same transform
+   applied across the whole clip so the motion stays coherent). Simulates
+   body-size and camera-position variation without needing more real footage.
+2. **Actually recording my mom** — had her record 4-5 real reps of each fixed
+   word herself, added alongside mine (not replacing — both signers' clips
+   coexist for a class).
+
+Together, this took those words from "works for me" to "works for both of us."
+Val accuracy went from 67% → 79%. Neither change alone would likely have been
+enough — augmentation only adds geometric variation, not real signing-style
+diversity.
+
+## Expanding the vocabulary: "minemy" and the pronoun problem
+
+Wanted to start building toward actual sentences, not just single words. ASL
+often collapses what are separate words in English into one sign — "mine" and
+"my" are the same physical sign (open palm flat on the chest), so the Kaggle
+dataset (250 words total, not just the 10 I'd been using) has it as a single
+combined class: `minemy`. Same idea for `hesheit` (he/she/it) and `weus`
+(we/us).
+
+No local Kaggle data existed for `minemy` at all (it wasn't part of the
+original download), and after last time's rate-limiting pain, I skipped Kaggle
+entirely and just recorded it from scratch — 32 clips, no Kaggle data
+whatsoever. It worked fine, which was a useful discovery on its own: self-
+recording doesn't have to be a patch for bad Kaggle data, it can be the
+primary source from the start.
+
+## Whack-a-mole: fixing one class breaks another
+
+Adding `minemy` immediately started stealing predictions that should have been
+"no" — a live test showed five real "no" attempts in a row misread as
+`minemy`/`later`/`yes` before a real "no" finally landed. Turned out `minemy`
+only had 25 real clips vs. 34-44 for the other re-recorded classes — a
+smaller class can end up with an oddly-shaped decision boundary that fires
+confidently in the wrong places. Bumping it to 32 fixed that particular
+confusion.
+
+Then, immediately after, **"dad" and "mom" stopped being predicted at all** —
+two words that hadn't been touched since the very first training run. The
+cause wasn't their data — it was the augmentation from the "fix it for mom"
+work above. Self-recorded classes now had 2 extra augmented copies per clip,
+giving them ~90-130 training examples each vs. ~38-49 for untouched Kaggle
+classes. The model was just biased toward whichever classes it had seen more
+of, in raw volume.
+
+Fixed with **inverse-frequency class weighting** during training — each
+class's contribution to the loss gets scaled by how rare it is
+(`class_weight` in Keras' `model.fit`), directly counteracting the volume
+imbalance without touching any data. "Dad" came back immediately after
+retraining with weighting on.
+
+Turned out "mom" itself also had a real Kaggle-label problem underneath (same
+"never gets predicted despite normal sample count" signature as the original
+"no" bug) — recording just **5** of my own clips fixed it completely (0% →
+85-100%). "Dad" and "happy" needed the same treatment and also only took 5
+clips each — a fraction of what "later"/"no"/"yes" needed (30-40). Not
+entirely sure yet why some words need so few reps and others need so many;
+something to watch for on future words.
+
+## An open bug: idle hands read as a confident wrong answer
+
+Repeatedly noticed long runs of an identical prediction/confidence (twenty
+straight "no (45%)" in one session, later "later (51%)" in another) — these
+line up with stretches where hands were just resting between actual signs, not
+real attempts. The classifier has no "nothing is happening" option, so a
+static idle pose gets mapped to whatever class the decision boundary
+considers closest, often with deceptively high confidence. Not fixed yet —
+the plan is a motion-detection guard that skips prediction entirely when the
+buffered frames show near-zero hand movement, rather than always classifying
+the window.
+
 ## Current state
 
-10-word vocabulary, ~67% validation accuracy. "Later," "no," and "yes" fixed via
-self-recorded replacement data. "Sad" and "thankyou" were spot-checked visually
-and looked correct as-is. "Happy" hasn't been investigated yet.
+11-word vocabulary (dad, happy, hello, later, minemy, mom, no, please, sad,
+thankyou, yes), ~89% validation accuracy (up from the original 55%). Working
+toward simple sentences — "MOM, MINEMY HAPPY" is achievable with the current
+vocab. Git checkpoint committed at each major milestone so this state is never
+at risk of being lost.
 
 ## Possible next steps
 
-- Check "happy" the same way (visualize → decide if it needs re-recording)
+- Fix the idle-pose false-confidence bug (motion-detection guard before
+  prediction)
+- Check "thankyou" the same way — flagged as weak in the most recent testing
+- Add more sentence-building words from the 250-word Kaggle vocab (hungry,
+  thirsty, like, go, hesheit, weus, yourself are good candidates)
 - Backfill more of the original 3807 available Kaggle files (only 446 were
   downloaded before hitting the rate limit) for the classes still using Kaggle
   data
